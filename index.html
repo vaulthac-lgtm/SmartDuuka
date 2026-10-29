@@ -28,7 +28,7 @@ code{background:#eef2ef;padding:2px 6px;border-radius:6px;user-select:all}
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getAuth,GoogleAuthProvider,signInWithPopup,signOut,onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import {getFirestore,doc,getDoc,setDoc,addDoc,collection,getDocs,query,where,updateDoc,writeBatch,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getFirestore,doc,getDoc,setDoc,addDoc,collection,getDocs,query,where,updateDoc,writeBatch,serverTimestamp,increment} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const app = initializeApp({
   apiKey: "AIzaSyAlFLZydM8PjG44eBXzFYB-AmpKZAAuVbE",
@@ -51,6 +51,11 @@ const MENUS = {
   stockkeeper: ["Products","Stock"]
 };
 let user = null, me = null, shop = null, tab = null;
+const rate = () => +shop.usdRate || 0;
+const toUGX = p => p.currency === "USD" ? Math.round(p.price * rate()) : p.price;
+const priceTxt = p => p.currency === "USD"
+  ? "$" + Number(p.price).toLocaleString("en-US") + (rate() ? " (" + ugx(toUGX(p)) + ")" : "")
+  : ugx(p.price);
 
 onAuthStateChanged(auth, async u => {
   user = u;
@@ -80,13 +85,20 @@ function showLogin() {
   };
 }
 
-function showOnboarding() {
+let triedInvite = false;
+async function showOnboarding() {
+  const code = new URLSearchParams(location.search).get("shop");
+  if (code && !triedInvite) {
+    triedInvite = true;
+    root.innerHTML = `<div class="card"><p>Joining the shop...</p></div>`;
+    if (await joinShop(code, user.displayName || user.email)) return location.reload();
+  }
   root.innerHTML = `<div class="card"><h2>Welcome</h2><p class="mu">Signed in as ${esc(user.email)}</p>
   <h3>I own a shop</h3>
   <input id="sn" placeholder="Shop name"><input id="on" placeholder="Your name" value="${esc(user.displayName)}">
   <button id="mk">Create my shop</button></div>
   <div class="card"><h3>I am staff</h3><p class="mu">Ask the owner for the shop code. The owner must add your email first.</p>
-  <input id="sc" placeholder="Shop code"><input id="jn" placeholder="Your name" value="${esc(user.displayName)}">
+  <input id="sc" placeholder="Shop code" value="${esc(code || "")}"><input id="jn" placeholder="Your name" value="${esc(user.displayName)}">
   <button class="alt" id="jb">Join shop</button><p class="err" id="e"></p></div>
   <button class="alt" id="out">Sign out</button>`;
   $("out").onclick = () => signOut(auth);
@@ -103,14 +115,10 @@ function showOnboarding() {
   $("jb").onclick = async () => {
     const sid = $("sc").value.trim(), nm = $("jn").value.trim();
     if (!sid || !nm) return ($("e").textContent = "Enter the shop code and your name.");
-    for (const role of ["manager", "cashier", "stockkeeper"]) {
-      try {
-        await setDoc(doc(db, "users", user.uid), {shopId: sid, role, name: nm, email: user.email, active: true, createdAt: serverTimestamp()});
-        return location.reload();
-      } catch (e) { /* wrong role for this invite, try the next one */ }
-    }
+    if (await joinShop(sid, nm)) return location.reload();
     $("e").textContent = "No invite found for " + user.email + " in this shop. Check the code with the owner.";
   };
+  if (code) $("e").textContent = "No invite found for " + user.email + ". Ask the owner to add this exact email, then reload this page.";
 }
 
 function showMain() {
@@ -121,44 +129,53 @@ function showMain() {
   <div id="body"></div>`;
   $("out").onclick = () => signOut(auth);
   root.querySelectorAll("nav button").forEach(b => b.onclick = () => { tab = b.dataset.t; showMain(); });
-  const view = {Products: viewProducts, Staff: viewStaff}[tab];
+  const view = {Sell: viewSell, Customers: viewCustomers, Products: viewProducts, Staff: viewStaff}[tab];
   if (view) view(); else $("body").innerHTML = `<div class="card"><h3>${tab}</h3><p class="mu">This screen is built in the next step.</p></div>`;
 }
 
 async function viewProducts() {
   const canEdit = ["owner", "manager"].includes(me.role);
-  $("body").innerHTML = `<div class="card"><h3>Products</h3>
-  ${canEdit ? `<input id="pn" placeholder="Product name"><input id="pp" type="number" inputmode="numeric" placeholder="Selling price (UGX)">
+  $("body").innerHTML = `${me.role === "owner" ? `<div class="card"><h3>Dollar rate</h3><p class="mu">1 USD = how many UGX? Used for products priced in USD.</p>
+  <input id="ur" type="number" inputmode="numeric" placeholder="e.g. 3700" value="${rate() || ""}"><button class="alt" id="us">Save rate</button></div>` : ""}
+  <div class="card"><h3>Products</h3>
+  ${canEdit ? `<input id="pn" placeholder="Product name"><div style="display:flex;gap:6px"><input id="pp" type="number" inputmode="decimal" placeholder="Selling price"><select id="pc" style="width:110px"><option>UGX</option><option>USD</option></select></div>
   <input id="ps" type="number" inputmode="numeric" placeholder="Pieces in stock"><button id="pa">Add product</button><p class="err" id="e"></p>` : ""}
   <div id="pl" class="mu">Loading...</div></div>`;
   const load = async () => {
     const s = await getDocs(collection(db, "shops", me.shopId, "products"));
     const list = s.docs.map(d => d.data()).sort((a, b) => a.name.localeCompare(b.name));
-    $("pl").innerHTML = list.length ? list.map(p => `<div class="row"><b>${esc(p.name)}</b><span>${ugx(p.price)} · ${p.stock} pcs</span></div>`).join("") : "No products yet.";
+    $("pl").innerHTML = list.length ? list.map(p => `<div class="row"><b>${esc(p.name)}</b><span>${priceTxt(p)} · ${p.stock} pcs</span></div>`).join("") : "No products yet.";
   };
   if (canEdit) $("pa").onclick = async () => {
     const name = $("pn").value.trim(), price = +$("pp").value, stock = +$("ps").value;
     if (!name || !(price >= 0) || !(stock >= 0)) return ($("e").textContent = "Enter a valid name, price and stock.");
     try {
-      await addDoc(collection(db, "shops", me.shopId, "products"), {name, price, stock, updatedAt: serverTimestamp()});
+      await addDoc(collection(db, "shops", me.shopId, "products"), {name, price, currency: $("pc").value, stock, updatedAt: serverTimestamp()});
       viewProducts();
     } catch (e) { $("e").textContent = e.message; }
+  };
+  if (me.role === "owner") $("us").onclick = async () => {
+    const r = +$("ur").value;
+    if (!(r > 0)) return ($("e").textContent = "Enter a valid rate.");
+    try { await updateDoc(doc(db, "shops", me.shopId), {usdRate: r}); shop.usdRate = r; viewProducts(); }
+    catch (e) { $("e").textContent = e.message; }
   };
   load().catch(e => ($("pl").textContent = e.message));
 }
 
-async function viewStaff() {
+async function viewStaff(inv) {
   $("body").innerHTML = `<div class="card"><h3>Shop code</h3><p>Give this code to your staff: <code>${esc(me.shopId)}</code></p></div>
   <div class="card"><h3>Add staff</h3><input id="ie" type="email" placeholder="Staff Google email">
   <select id="ir"><option value="cashier">Cashier</option><option value="manager">Manager</option><option value="stockkeeper">Stock keeper</option></select>
   <button id="ia">Add invite</button><p class="err" id="e"></p><div id="il" class="mu"></div></div>
+  ${inv ? shareCard(inv) : ""}
   <div class="card"><h3>Team</h3><div id="tl" class="mu">Loading...</div></div>`;
   $("ia").onclick = async () => {
     const em = $("ie").value.trim().toLowerCase();
     if (!em.includes("@")) return ($("e").textContent = "Enter a valid email.");
     try {
       await setDoc(doc(db, "shops", me.shopId, "invites", em), {role: $("ir").value, createdAt: serverTimestamp()});
-      viewStaff();
+      viewStaff({email: em, role: $("ir").value});
     } catch (e) { $("e").textContent = e.message; }
   };
   try {
@@ -175,6 +192,104 @@ async function viewStaff() {
       viewStaff();
     });
   } catch (e) { $("tl").textContent = e.message; }
+}
+let cart = [], prods = [];
+async function viewSell() {
+  cart = [];
+  $("body").innerHTML = `<div class="card"><h3>New sale</h3><div id="sp" class="mu">Loading...</div></div>`;
+  try {
+    const s = await getDocs(collection(db, "shops", me.shopId, "products"));
+    prods = s.docs.map(d => ({id: d.id, ...d.data()})).sort((a, b) => a.name.localeCompare(b.name));
+  } catch (e) { return ($("sp").textContent = e.message); }
+  if (!prods.length) return ($("sp").textContent = "No products yet. Ask the manager to add products first.");
+  $("body").innerHTML = `<div class="card"><h3>New sale</h3>
+  <select id="pr">${prods.map(p => `<option value="${p.id}">${esc(p.name)} - ${priceTxt(p)} (${p.stock} left)</option>`).join("")}</select>
+  <input id="q" type="number" inputmode="numeric" min="1" placeholder="Pieces sold" value="1">
+  <button class="alt" id="ad">Add to sale</button><p class="err" id="e"></p></div>
+  <div class="card"><div id="ct"></div>
+  <input id="pd" type="number" inputmode="numeric" placeholder="Amount paid (UGX)">
+  <div id="cu" style="display:none"><input id="cn" placeholder="Customer name (required for credit)"></div>
+  <div id="sm" class="mu"></div><button id="dn">Complete sale</button><p class="err" id="e2"></p></div>`;
+  const total = () => cart.reduce((t, l) => t + l.price * l.qty, 0);
+  const upd = () => {
+    const bal = total() - ($("pd").value === "" ? 0 : +$("pd").value);
+    $("cu").style.display = bal > 0 ? "block" : "none";
+    $("sm").textContent = !cart.length ? "" : bal > 0 ? "Balance on credit: " + ugx(bal) : "Change to give: " + ugx(-bal);
+  };
+  const draw = () => {
+    $("ct").innerHTML = cart.length
+      ? cart.map((l, i) => `<div class="row"><span>${esc(l.name)} x ${l.qty}</span><span>${ugx(l.price * l.qty)} <button class="alt sm" data-i="${i}">x</button></span></div>`).join("")
+        + `<div class="row"><b>Total</b><b>${ugx(total())}</b></div>`
+      : `<p class="mu">No items yet.</p>`;
+    $("ct").querySelectorAll("button").forEach(b => b.onclick = () => { cart.splice(+b.dataset.i, 1); draw(); });
+    upd();
+  };
+  $("pd").oninput = upd;
+  $("ad").onclick = () => {
+    const p = prods.find(x => x.id === $("pr").value), q = Math.floor(+$("q").value);
+    if (!(q > 0)) return ($("e").textContent = "Enter the pieces sold.");
+    if (p.currency === "USD" && !rate()) return ($("e").textContent = "The owner must set the USD rate first (Products tab).");
+    const inCart = cart.filter(l => l.id === p.id).reduce((t, l) => t + l.qty, 0);
+    if (inCart + q > p.stock) return ($("e").textContent = "Only " + p.stock + " pieces of " + p.name + " in stock.");
+    $("e").textContent = "";
+    const ex = cart.find(l => l.id === p.id);
+    if (ex) ex.qty += q; else cart.push({id: p.id, name: p.name, price: toUGX(p), qty: q});
+    $("q").value = 1; draw();
+  };
+  $("dn").onclick = async () => {
+    const t = total();
+    if (!cart.length) return ($("e2").textContent = "Add at least one item.");
+    if ($("pd").value === "" || +$("pd").value < 0) return ($("e2").textContent = "Enter the amount paid (0 if nothing paid).");
+    const paid = +$("pd").value, bal = Math.max(t - paid, 0), cn = $("cn").value.trim();
+    if (bal > 0 && !cn) return ($("e2").textContent = "Type the customer name for a credit sale.");
+    $("dn").disabled = true;
+    try {
+      const sid = me.shopId, b = writeBatch(db);
+      b.set(doc(collection(db, "shops", sid, "sales")), {
+        items: cart.map(l => ({productId: l.id, name: l.name, price: l.price, qty: l.qty})),
+        total: t, paid: Math.min(paid, t), balance: bal, customerName: cn,
+        sellerUid: user.uid, sellerName: me.name, voided: false, createdAt: serverTimestamp()
+      });
+      cart.forEach(l => b.update(doc(db, "shops", sid, "products", l.id), {stock: increment(-l.qty), updatedAt: serverTimestamp()}));
+      if (bal > 0) {
+        const cid = cn.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "customer";
+        b.set(doc(db, "shops", sid, "customers", cid), {name: cn, creditBalance: increment(bal), updatedAt: serverTimestamp()}, {merge: true});
+      }
+      await b.commit();
+      $("body").innerHTML = `<div class="card"><h3>Sale saved</h3><p>Total: ${ugx(t)}<br>Paid: ${ugx(Math.min(paid, t))}
+      ${bal > 0 ? `<br>On credit: ${ugx(bal)} (${esc(cn)})` : paid > t ? `<br>Change: ${ugx(paid - t)}` : ""}</p>
+      <button id="nw">New sale</button></div>`;
+      $("nw").onclick = viewSell;
+    } catch (e) { $("dn").disabled = false; $("e2").textContent = e.message; }
+  };
+  draw();
+}
+
+async function viewCustomers() {
+  $("body").innerHTML = `<div class="card"><h3>Customers on credit</h3><div id="cl" class="mu">Loading...</div></div>`;
+  try {
+    const s = await getDocs(collection(db, "shops", me.shopId, "customers"));
+    const l = s.docs.map(d => d.data()).filter(c => c.creditBalance > 0).sort((a, b) => b.creditBalance - a.creditBalance);
+    $("cl").innerHTML = l.length ? l.map(c => `<div class="row"><b>${esc(c.name)}</b><span>${ugx(c.creditBalance)}</span></div>`).join("") : "No credit customers yet.";
+  } catch (e) { $("cl").textContent = e.message; }
+}
+function shareCard(inv) {
+  const link = location.origin + "/?shop=" + me.shopId;
+  const msg = "You are invited to " + shop.name + " on SmartDuuka as " + inv.role + ". Tap this link and sign in with Google using " + inv.email + ": " + link;
+  const sub = "Invitation to " + shop.name + " on SmartDuuka";
+  return `<div class="card"><h3>Invite ready</h3><p class="mu">Send it to ${esc(inv.email)}. They tap the link, sign in with that Google email, and they are in.</p>
+  <a href="mailto:${encodeURIComponent(inv.email)}?subject=${encodeURIComponent(sub)}&body=${encodeURIComponent(msg)}"><button type="button">Send by email</button></a>
+  <a href="https://wa.me/?text=${encodeURIComponent(msg)}"><button type="button" class="alt">Share on WhatsApp</button></a></div>`;
+}
+
+async function joinShop(sid, nm) {
+  for (const role of ["manager", "cashier", "stockkeeper"]) {
+    try {
+      await setDoc(doc(db, "users", user.uid), {shopId: sid, role, name: nm, email: user.email, active: true, createdAt: serverTimestamp()});
+      return true;
+    } catch (e) { /* wrong role for this invite, try the next one */ }
+  }
+  return false;
 }
 </script>
 </body>
