@@ -317,7 +317,7 @@ async function viewCustomers() {
   } catch (e) { $("cl").textContent = e.message; }
 }
 function shareCard(inv) {
-  const link = location.origin + "/?shop=" + me.shopId;
+  const link = location.origin + location.pathname + "?shop=" + me.shopId;
   const msg = "You are invited to " + shop.name + " on SmartDuuka as " + inv.role + ". Tap this link and sign in with Google using " + inv.email + ": " + link;
   const sub = "Invitation to " + shop.name + " on SmartDuuka";
   return `<div class="card"><h3>Invite ready</h3><p class="mu">Send it to ${esc(inv.email)}. They tap the link, sign in with that Google email, and they are in.</p>
