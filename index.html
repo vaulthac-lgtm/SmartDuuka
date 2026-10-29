@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SmartDuuka</title>
+<style>
+:root{--g:#0b7a43;--bg:#f4f6f5;--tx:#16221b;--mu:#66756c;--bd:#dbe3de}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx)}
+.wrap{max-width:640px;margin:0 auto;padding:14px}
+.card{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:14px;margin:10px 0}
+h1,h2,h3{margin:.2em 0}
+input,select,button{font:inherit;padding:11px;border-radius:8px;border:1px solid var(--bd);width:100%;margin:5px 0}
+button{background:var(--g);color:#fff;border:0;font-weight:600;cursor:pointer}
+button.alt{background:#fff;color:var(--g);border:1px solid var(--g)}
+button.sm{width:auto;padding:6px 10px;margin:0}
+nav{display:flex;gap:6px;overflow-x:auto;padding:4px 0}
+nav button{width:auto;white-space:nowrap;background:#fff;color:var(--tx);border:1px solid var(--bd)}
+nav button.on{background:var(--g);color:#fff}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--bd)}
+.mu{color:var(--mu);font-size:.9em}.err{color:#b3261e}
+code{background:#eef2ef;padding:2px 6px;border-radius:6px;user-select:all}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">Loading...</div>
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getAuth,GoogleAuthProvider,signInWithPopup,signOut,onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getFirestore,doc,getDoc,setDoc,addDoc,collection,getDocs,query,where,updateDoc,writeBatch,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const app = initializeApp({
+  apiKey: "AIzaSyAlFLZydM8PjG44eBXzFYB-AmpKZAAuVbE",
+  authDomain: "smartduuka-1b0e1.firebaseapp.com",
+  projectId: "smartduuka-1b0e1",
+  storageBucket: "smartduuka-1b0e1.firebasestorage.app",
+  messagingSenderId: "874540106206",
+  appId: "1:874540106206:web:65fa1e2dd4490ab3c05d4f"
+});
+const auth = getAuth(app), db = getFirestore(app);
+const $ = id => document.getElementById(id);
+const root = $("app");
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ugx = n => "UGX " + Number(n || 0).toLocaleString("en-UG");
+
+const MENUS = {
+  owner: ["Sell","Products","Stock","Customers","Reports","Staff"],
+  manager: ["Sell","Products","Stock","Customers","Reports"],
+  cashier: ["Sell","Products","Customers"],
+  stockkeeper: ["Products","Stock"]
+};
+let user = null, me = null, shop = null, tab = null;
+
+onAuthStateChanged(auth, async u => {
+  user = u;
+  if (!u) return showLogin();
+  try {
+    const s = await getDoc(doc(db, "users", u.uid));
+    me = s.exists() ? s.data() : null;
+    if (!me) return showOnboarding();
+    if (!me.active) return showMsg("Your account is switched off. Contact the shop owner.");
+    const sh = await getDoc(doc(db, "shops", me.shopId));
+    shop = sh.data(); tab = MENUS[me.role][0];
+    showMain();
+  } catch (e) { showMsg("Error: " + e.message); }
+});
+
+function showMsg(t) {
+  root.innerHTML = `<div class="card"><p>${esc(t)}</p><button id="out">Sign out</button></div>`;
+  $("out").onclick = () => signOut(auth);
+}
+
+function showLogin() {
+  root.innerHTML = `<div class="card"><h1>SmartDuuka</h1><p class="mu">Shop sales and stock management</p>
+  <button id="go">Sign in with Google</button><p class="err" id="e"></p></div>`;
+  $("go").onclick = async () => {
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    catch (e) { $("e").textContent = e.message; }
+  };
+}
+
+function showOnboarding() {
+  root.innerHTML = `<div class="card"><h2>Welcome</h2><p class="mu">Signed in as ${esc(user.email)}</p>
+  <h3>I own a shop</h3>
+  <input id="sn" placeholder="Shop name"><input id="on" placeholder="Your name" value="${esc(user.displayName)}">
+  <button id="mk">Create my shop</button></div>
+  <div class="card"><h3>I am staff</h3><p class="mu">Ask the owner for the shop code. The owner must add your email first.</p>
+  <input id="sc" placeholder="Shop code"><input id="jn" placeholder="Your name" value="${esc(user.displayName)}">
+  <button class="alt" id="jb">Join shop</button><p class="err" id="e"></p></div>
+  <button class="alt" id="out">Sign out</button>`;
+  $("out").onclick = () => signOut(auth);
+  $("mk").onclick = async () => {
+    const name = $("sn").value.trim(), on = $("on").value.trim();
+    if (!name || !on) return ($("e").textContent = "Fill in the shop name and your name.");
+    try {
+      const sref = doc(collection(db, "shops")), b = writeBatch(db);
+      b.set(sref, {name, ownerUid: user.uid, createdAt: serverTimestamp()});
+      b.set(doc(db, "users", user.uid), {shopId: sref.id, role: "owner", name: on, email: user.email, active: true, createdAt: serverTimestamp()});
+      await b.commit(); location.reload();
+    } catch (e) { $("e").textContent = e.message; }
+  };
+  $("jb").onclick = async () => {
+    const sid = $("sc").value.trim(), nm = $("jn").value.trim();
+    if (!sid || !nm) return ($("e").textContent = "Enter the shop code and your name.");
+    for (const role of ["manager", "cashier", "stockkeeper"]) {
+      try {
+        await setDoc(doc(db, "users", user.uid), {shopId: sid, role, name: nm, email: user.email, active: true, createdAt: serverTimestamp()});
+        return location.reload();
+      } catch (e) { /* wrong role for this invite, try the next one */ }
+    }
+    $("e").textContent = "No invite found for " + user.email + " in this shop. Check the code with the owner.";
+  };
+}
+
+function showMain() {
+  const tabs = MENUS[me.role];
+  root.innerHTML = `<div class="card"><h2>${esc(shop.name)}</h2>
+  <div class="mu">${esc(me.name)} · ${esc(me.role)}</div><button class="alt sm" id="out" style="margin-top:8px">Sign out</button></div>
+  <nav>${tabs.map(t => `<button data-t="${t}" class="${t === tab ? "on" : ""}">${t}</button>`).join("")}</nav>
+  <div id="body"></div>`;
+  $("out").onclick = () => signOut(auth);
+  root.querySelectorAll("nav button").forEach(b => b.onclick = () => { tab = b.dataset.t; showMain(); });
+  const view = {Products: viewProducts, Staff: viewStaff}[tab];
+  if (view) view(); else $("body").innerHTML = `<div class="card"><h3>${tab}</h3><p class="mu">This screen is built in the next step.</p></div>`;
+}
+
+async function viewProducts() {
+  const canEdit = ["owner", "manager"].includes(me.role);
+  $("body").innerHTML = `<div class="card"><h3>Products</h3>
+  ${canEdit ? `<input id="pn" placeholder="Product name"><input id="pp" type="number" inputmode="numeric" placeholder="Selling price (UGX)">
+  <input id="ps" type="number" inputmode="numeric" placeholder="Pieces in stock"><button id="pa">Add product</button><p class="err" id="e"></p>` : ""}
+  <div id="pl" class="mu">Loading...</div></div>`;
+  const load = async () => {
+    const s = await getDocs(collection(db, "shops", me.shopId, "products"));
+    const list = s.docs.map(d => d.data()).sort((a, b) => a.name.localeCompare(b.name));
+    $("pl").innerHTML = list.length ? list.map(p => `<div class="row"><b>${esc(p.name)}</b><span>${ugx(p.price)} · ${p.stock} pcs</span></div>`).join("") : "No products yet.";
+  };
+  if (canEdit) $("pa").onclick = async () => {
+    const name = $("pn").value.trim(), price = +$("pp").value, stock = +$("ps").value;
+    if (!name || !(price >= 0) || !(stock >= 0)) return ($("e").textContent = "Enter a valid name, price and stock.");
+    try {
+      await addDoc(collection(db, "shops", me.shopId, "products"), {name, price, stock, updatedAt: serverTimestamp()});
+      viewProducts();
+    } catch (e) { $("e").textContent = e.message; }
+  };
+  load().catch(e => ($("pl").textContent = e.message));
+}
+
+async function viewStaff() {
+  $("body").innerHTML = `<div class="card"><h3>Shop code</h3><p>Give this code to your staff: <code>${esc(me.shopId)}</code></p></div>
+  <div class="card"><h3>Add staff</h3><input id="ie" type="email" placeholder="Staff Google email">
+  <select id="ir"><option value="cashier">Cashier</option><option value="manager">Manager</option><option value="stockkeeper">Stock keeper</option></select>
+  <button id="ia">Add invite</button><p class="err" id="e"></p><div id="il" class="mu"></div></div>
+  <div class="card"><h3>Team</h3><div id="tl" class="mu">Loading...</div></div>`;
+  $("ia").onclick = async () => {
+    const em = $("ie").value.trim().toLowerCase();
+    if (!em.includes("@")) return ($("e").textContent = "Enter a valid email.");
+    try {
+      await setDoc(doc(db, "shops", me.shopId, "invites", em), {role: $("ir").value, createdAt: serverTimestamp()});
+      viewStaff();
+    } catch (e) { $("e").textContent = e.message; }
+  };
+  try {
+    const inv = await getDocs(collection(db, "shops", me.shopId, "invites"));
+    $("il").innerHTML = inv.docs.length ? "Invited: " + inv.docs.map(d => esc(d.id) + " (" + esc(d.data().role) + ")").join(", ") : "";
+    const us = await getDocs(query(collection(db, "users"), where("shopId", "==", me.shopId)));
+    $("tl").innerHTML = us.docs.map(d => {
+      const u = d.data(), self = d.id === user.uid;
+      return `<div class="row"><div><b>${esc(u.name)}</b><div class="mu">${esc(u.email)} · ${esc(u.role)}${u.active ? "" : " · OFF"}</div></div>
+      ${self ? "" : `<button class="alt sm" data-u="${d.id}" data-a="${u.active ? 0 : 1}">${u.active ? "Switch off" : "Switch on"}</button>`}</div>`;
+    }).join("");
+    $("tl").querySelectorAll("button").forEach(b => b.onclick = async () => {
+      await updateDoc(doc(db, "users", b.dataset.u), {active: b.dataset.a === "1"});
+      viewStaff();
+    });
+  } catch (e) { $("tl").textContent = e.message; }
+}
+</script>
+</body>
+</html>
