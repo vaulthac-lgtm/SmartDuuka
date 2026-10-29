@@ -47,7 +47,7 @@ const ugx = n => "UGX " + Number(n || 0).toLocaleString("en-UG");
 const MENUS = {
   owner: ["Sell","Products","Stock","Customers","Reports","Staff"],
   manager: ["Sell","Products","Stock","Customers","Reports"],
-  cashier: ["Sell","Products","Customers"],
+  cashier: ["Sell","Products","Customers","Reports"],
   stockkeeper: ["Products","Stock"]
 };
 let user = null, me = null, shop = null, tab = null;
@@ -129,7 +129,7 @@ function showMain() {
   <div id="body"></div>`;
   $("out").onclick = () => signOut(auth);
   root.querySelectorAll("nav button").forEach(b => b.onclick = () => { tab = b.dataset.t; showMain(); });
-  const view = {Sell: viewSell, Customers: viewCustomers, Products: viewProducts, Staff: viewStaff}[tab];
+  const view = {Sell: viewSell, Customers: viewCustomers, Products: viewProducts, Staff: viewStaff, Stock: viewStock, Reports: viewReports}[tab];
   if (view) view(); else $("body").innerHTML = `<div class="card"><h3>${tab}</h3><p class="mu">This screen is built in the next step.</p></div>`;
 }
 
@@ -150,7 +150,8 @@ async function viewProducts() {
     const name = $("pn").value.trim(), price = +$("pp").value, stock = +$("ps").value;
     if (!name || !(price >= 0) || !(stock >= 0)) return ($("e").textContent = "Enter a valid name, price and stock.");
     try {
-      await addDoc(collection(db, "shops", me.shopId, "products"), {name, price, currency: $("pc").value, stock, updatedAt: serverTimestamp()});
+      const r = await addDoc(collection(db, "shops", me.shopId, "products"), {name, price, currency: $("pc").value, stock, updatedAt: serverTimestamp()});
+      if (stock > 0) await addDoc(collection(db, "shops", me.shopId, "stockMoves"), {productId: r.id, productName: name, change: stock, reason: "opening", userUid: user.uid, userName: me.name, createdAt: serverTimestamp()});
       viewProducts();
     } catch (e) { $("e").textContent = e.message; }
   };
@@ -290,6 +291,67 @@ async function joinShop(sid, nm) {
     } catch (e) { /* wrong role for this invite, try the next one */ }
   }
   return false;
+}
+const TZ = "Africa/Kampala";
+const dayStr = d => d.toLocaleDateString("en-CA", {timeZone: TZ});
+const dayRange = ds => { const a = new Date(ds + "T00:00:00+03:00"); return [a, new Date(a.getTime() + 864e5)]; };
+const hm = t => t ? t.toDate().toLocaleTimeString("en-GB", {timeZone: TZ, hour: "2-digit", minute: "2-digit"}) : "--:--";
+let lastDay = dayStr(new Date());
+setInterval(() => { const d = dayStr(new Date()); if (d !== lastDay) { lastDay = d; if (me && shop) showMain(); } }, 60000);
+
+async function viewReports(ds) {
+  ds = typeof ds === "string" ? ds : dayStr(new Date());
+  const [a, z] = dayRange(ds), mgr = ["owner", "manager"].includes(me.role);
+  $("body").innerHTML = `<div class="card"><h3>${mgr ? "Sales" : "My sales"}</h3><input id="dt" type="date" value="${ds}"><div id="rs" class="mu">Loading...</div></div>`;
+  $("dt").onchange = () => $("dt").value && viewReports($("dt").value);
+  try {
+    const col = collection(db, "shops", me.shopId, "sales");
+    const q = mgr ? query(col, where("createdAt", ">=", a), where("createdAt", "<", z)) : query(col, where("sellerUid", "==", user.uid));
+    const l = (await getDocs(q)).docs.map(d => d.data())
+      .filter(x => !x.voided && x.createdAt && x.createdAt.toDate() >= a && x.createdAt.toDate() < z)
+      .sort((x, y) => y.createdAt.toMillis() - x.createdAt.toMillis());
+    const sum = k => l.reduce((t, x) => t + (x[k] || 0), 0);
+    $("rs").innerHTML = `<div class="row"><b>${l.length} sales</b><b>${ugx(sum("total"))}</b></div>
+    <div class="row"><span>Money received</span><span>${ugx(sum("paid"))}</span></div>
+    <div class="row"><span>Given on credit</span><span>${ugx(sum("balance"))}</span></div>`
+    + (l.map(x => `<div class="row"><div><b>${hm(x.createdAt)}</b> ${esc(x.sellerName)}${x.customerName ? " · " + esc(x.customerName) : ""}
+      <div class="mu">${x.items.map(i => esc(i.name) + " x" + i.qty).join(", ")}</div></div>
+      <div style="text-align:right">${ugx(x.total)}<div class="mu">${x.balance > 0 ? "credit " + ugx(x.balance) : "paid"}</div></div></div>`).join("") || "No sales on this day.");
+  } catch (e) { $("rs").textContent = e.message; }
+}
+
+async function viewStock() {
+  const sid = me.shopId;
+  $("body").innerHTML = `<div class="card"><h3>Stock entry</h3><div id="sp" class="mu">Loading...</div></div>`;
+  let prods;
+  try {
+    prods = (await getDocs(collection(db, "shops", sid, "products"))).docs.map(d => ({id: d.id, ...d.data()})).sort((x, y) => x.name.localeCompare(y.name));
+  } catch (e) { return ($("sp").textContent = e.message); }
+  if (!prods.length) return ($("sp").textContent = "No products yet. Add products first.");
+  $("body").innerHTML = `<div class="card"><h3>Stock entry</h3>
+  <select id="pr">${prods.map(p => `<option value="${p.id}">${esc(p.name)} (${p.stock} now)</option>`).join("")}</select>
+  <select id="ty"><option value="in">Stock received (add)</option><option value="out">Damaged or lost (remove)</option></select>
+  <input id="q" type="number" inputmode="numeric" placeholder="Number of pieces"><input id="nt" placeholder="Note or supplier (optional)">
+  <button id="sv">Save stock entry</button><p class="err" id="e"></p></div>
+  <div class="card"><h3>Today's stock entries</h3><div id="sl" class="mu">Loading...</div></div>`;
+  $("sv").onclick = async () => {
+    const p = prods.find(x => x.id === $("pr").value), q = Math.floor(+$("q").value), inn = $("ty").value === "in", ch = inn ? q : -q;
+    if (!(q > 0)) return ($("e").textContent = "Enter the number of pieces.");
+    if (p.stock + ch < 0) return ($("e").textContent = "Only " + p.stock + " pieces in stock.");
+    $("sv").disabled = true;
+    try {
+      const b = writeBatch(db);
+      b.update(doc(db, "shops", sid, "products", p.id), {stock: increment(ch), updatedAt: serverTimestamp()});
+      b.set(doc(collection(db, "shops", sid, "stockMoves")), {productId: p.id, productName: p.name, change: ch, reason: inn ? "received" : "removed", note: $("nt").value.trim(), userUid: user.uid, userName: me.name, createdAt: serverTimestamp()});
+      await b.commit(); viewStock();
+    } catch (e) { $("sv").disabled = false; $("e").textContent = e.message; }
+  };
+  try {
+    const [a] = dayRange(dayStr(new Date()));
+    const l = (await getDocs(query(collection(db, "shops", sid, "stockMoves"), where("createdAt", ">=", a)))).docs.map(d => d.data())
+      .filter(m => m.createdAt).sort((x, y) => y.createdAt.toMillis() - x.createdAt.toMillis());
+    $("sl").innerHTML = l.map(m => `<div class="row"><div><b>${hm(m.createdAt)}</b> ${esc(m.productName)}<div class="mu">${esc(m.userName)}${m.note ? " · " + esc(m.note) : ""}</div></div><b>${m.change > 0 ? "+" : ""}${m.change}</b></div>`).join("") || "No stock entries today.";
+  } catch (e) { $("sl").textContent = e.message; }
 }
 </script>
 </body>
