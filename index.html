@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SmartDuuka</title>
+  <link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b7a43">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
 :root{--g:#0b7a43;--bg:#f4f6f5;--tx:#16221b;--mu:#66756c;--bd:#dbe3de}
 *{box-sizing:border-box}
@@ -425,6 +428,6 @@ async function viewMessages() {
       <div>${esc(m.text)}</div></div></div>`).join("") || "No messages yet.";
   } catch (e) { $("ml").textContent = e.message; }
 }
-</script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");</script>
 </body>
 </html>
