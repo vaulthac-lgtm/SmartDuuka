@@ -311,8 +311,49 @@ async function viewSell() {
   };
   draw();
 }
+  
+  async function viewCustomers() {
+  const canPay = ["owner", "manager"].includes(me.role);
+  $("body").innerHTML = `<div class="card"><h3>Customers on credit</h3><div id="cl" class="mu">Loading...</div></div>`;
+  try {
+    const s = await getDocs(collection(db, "shops", me.shopId, "customers"));
+    const l = s.docs.map(d => ({ id: d.id, ...d.data() })).filter(c => c.creditBalance > 0).sort((a, b) => b.creditBalance - a.creditBalance);
+    $("cl").innerHTML = l.length
+      ? l.map(c => `<div class="row"><div><b>${esc(c.name)}</b><div class="mu">Owes ${ugx(c.creditBalance)}</div></div>${canPay ? `<button class="alt sm" data-id="${esc(c.id)}">Receive payment</button>` : ""}</div>`).join("")
+      : "No customers on credit.";
+    $("cl").querySelectorAll("button[data-id]").forEach(b => b.onclick = () => payDebt(b.dataset.id));
+  } catch (e) { $("cl").textContent = e.message; }
+}
 
-async function viewCustomers() {
+async function payDebt(cid) {
+  const sid = me.shopId;
+  try {
+    const ref = doc(db, "shops", sid, "customers", cid);
+    const c = (await getDoc(ref)).data();
+    $("body").innerHTML = `<div class="card"><h3>Receive payment</h3><p><b>${esc(c.name)}</b><br>Owes: ${ugx(c.creditBalance)}</p><input id="pa" type="number" inputmode="numeric" placeholder="Amount paid (UGX)"><button id="ps">Save payment</button><button class="alt" id="pc">Cancel</button><p class="err" id="pe"></p></div>`;
+    $("pc").onclick = viewCustomers;
+    $("ps").onclick = async () => {
+      const amt = Math.round(+$("pa").value);
+      if (!(amt > 0)) return ($("pe").textContent = "Enter the amount paid.");
+      $("ps").disabled = true;
+      try {
+        const fresh = (await getDoc(ref)).data();
+        if (amt > fresh.creditBalance) {
+          $("ps").disabled = false;
+          return ($("pe").textContent = "That is more than the debt (" + ugx(fresh.creditBalance) + ").");
+        }
+        const b = writeBatch(db);
+        b.update(ref, { creditBalance: increment(-amt), updatedAt: serverTimestamp() });
+        b.set(doc(collection(db, "shops", sid, "payments")), {
+          customerId: cid, customerName: fresh.name, amount: amt,
+          receivedByUid: user.uid, receivedBy: me.name, createdAt: serverTimestamp()
+        });
+        await b.commit();
+        viewCustomers();
+      } catch (e) { $("ps").disabled = false; $("pe").textContent = e.message; }
+    };
+  } catch (e) { $("body").innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; }
+  }
   $("body").innerHTML = `<div class="card"><h3>Customers on credit</h3><div id="cl" class="mu">Loading...</div></div>`;
   try {
     const s = await getDocs(collection(db, "shops", me.shopId, "customers"));
