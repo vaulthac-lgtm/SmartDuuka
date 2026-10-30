@@ -11,7 +11,8 @@
 :root{--g:#0b7a43;--bg:#f4f6f5;--tx:#16221b;--mu:#66756c;--bd:#dbe3de}
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx)}
-.wrap{max-width:640px;margin:0 auto;padding:14px}
+.wrap{max-width:100%;margin:0 auto;padding:14px 14px 40px}
+@media(min-width:900px){.wrap{max-width:640px}}
 .card{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:14px;margin:10px 0}
 h1,h2,h3{margin:.2em 0}
 input,select,button{font:inherit;padding:11px;border-radius:8px;border:1px solid var(--bd);width:100%;margin:5px 0}
