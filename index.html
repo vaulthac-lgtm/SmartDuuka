@@ -50,7 +50,7 @@ h1,h2,h3,button,nav{font-family:Montserrat,system-ui,sans-serif}
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getAuth,GoogleAuthProvider,signInWithPopup,signOut,onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import {getFirestore,doc,getDoc,setDoc,addDoc,collection,getDocs,query,where,updateDoc,writeBatch,serverTimestamp,increment} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getFirestore,doc,getDoc,setDoc,addDoc,collection,getDocs,query,where,updateDoc,writeBatch,serverTimestamp,increment,deleteDoc} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const app = initializeApp({
   apiKey: "AIzaSyAlFLZydM8PjG44eBXzFYB-AmpKZAAuVbE",
@@ -181,8 +181,13 @@ async function viewProducts() {
   <div id="pl" class="mu">Loading...</div></div>`;
   const load = async () => {
     const s = await getDocs(collection(db, "shops", me.shopId, "products"));
-    const list = s.docs.map(d => d.data()).sort((a, b) => a.name.localeCompare(b.name));
-    $("pl").innerHTML = list.length ? list.map(p => `<div class="row"><b>${esc(p.name)}</b><span>${priceTxt(p)} · ${p.stock} pcs</span></div>`).join("") : "No products yet.";
+    const list = s.docs.map(d => ({id: d.id, ...d.data()})).sort((a, b) => a.name.localeCompare(b.name));
+    $("pl").innerHTML = list.length ? list.map(p => `<div class="row"><div><b>${esc(p.name)}</b><div class="mu">${priceTxt(p)} · ${p.stock} pcs</div></div>${me.role === "owner" ? `<button class="alt sm" data-del="${p.id}" data-n="${esc(p.name)}">Remove</button>` : ""}</div>`).join("") : "No products yet.";
+    $("pl").querySelectorAll("button[data-del]").forEach(b => b.onclick = async () => {
+      if (!confirm("Remove " + b.dataset.n + " from the shop for good? Past sales stay in Reports.")) return;
+      try { await deleteDoc(doc(db, "shops", me.shopId, "products", b.dataset.del)); viewProducts(); }
+      catch (e) { alert(e.message); }
+    });
   };
   if (canEdit) $("pa").onclick = async () => {
     const name = $("pn").value.trim(), price = +$("pp").value, stock = +$("ps").value;
@@ -313,7 +318,7 @@ async function viewSell() {
 }
   
   async function viewCustomers() {
-  const canPay = ["owner", "manager"].includes(me.role);
+  const canPay = ["owner", "manager", "cashier"].includes(me.role);
   $("body").innerHTML = `<div class="card"><h3>Customers on credit</h3><div id="cl" class="mu">Loading...</div></div>`;
   try {
     const s = await getDocs(collection(db, "shops", me.shopId, "customers"));
@@ -332,6 +337,16 @@ async function payDebt(cid) {
     const c = (await getDoc(ref)).data();
     $("body").innerHTML = `<div class="card"><h3>Receive payment</h3><p><b>${esc(c.name)}</b><br>Owes: ${ugx(c.creditBalance)}</p><input id="pa" type="number" inputmode="numeric" placeholder="Amount paid (UGX)"><button id="ps">Save payment</button><button class="alt" id="pc">Cancel</button><p class="err" id="pe"></p></div>`;
     $("pc").onclick = viewCustomers;
+    const hc = document.createElement("div");
+    hc.className = "card";
+    hc.innerHTML = `<h3>Payments so far</h3><div id="ph" class="mu">Loading...</div>`;
+    $("body").appendChild(hc);
+    getDocs(query(collection(db, "shops", sid, "payments"), where("customerId", "==", cid)))
+      .then(s => {
+        const l = s.docs.map(d => d.data()).filter(p => p.createdAt).sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
+        $("ph").innerHTML = l.map(p => `<div class="row"><span>${p.createdAt.toDate().toLocaleDateString("en-GB", {timeZone: TZ, day: "2-digit", month: "short"})} · ${esc(p.receivedBy)}</span><b>${ugx(p.amount)}</b></div>`).join("") || "No payments yet.";
+      })
+      .catch(e => ($("ph").textContent = e.message));
     $("ps").onclick = async () => {
       const amt = Math.round(+$("pa").value);
       if (!(amt > 0)) return ($("pe").textContent = "Enter the amount paid.");
@@ -354,14 +369,6 @@ async function payDebt(cid) {
     };
   } catch (e) { $("body").innerHTML = `<div class="card"><p class="err">${esc(e.message)}</p></div>`; }
   }
-async function viewCustomersOld() {
-  $("body").innerHTML = `<div class="card"><h3>Customers on credit</h3><div id="cl" class="mu">Loading...</div></div>`;
-  try {
-    const s = await getDocs(collection(db, "shops", me.shopId, "customers"));
-    const l = s.docs.map(d => d.data()).filter(c => c.creditBalance > 0).sort((a, b) => b.creditBalance - a.creditBalance);
-    $("cl").innerHTML = l.length ? l.map(c => `<div class="row"><b>${esc(c.name)}</b><span>${ugx(c.creditBalance)}</span></div>`).join("") : "No credit customers yet.";
-  } catch (e) { $("cl").textContent = e.message; }
-}
 function shareCard(inv) {
   const link = location.origin + location.pathname + "?shop=" + me.shopId;
   const msg = "You are invited to " + shop.name + " on SmartDuuka as " + inv.role + ". Tap this link and sign in with Google using " + inv.email + ": " + link;
