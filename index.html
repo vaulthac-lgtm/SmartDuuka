@@ -356,6 +356,7 @@ async function payDebt(cid) {
   }
   $("body").innerHTML = `<div class="card"><h3>Customers on credit</h3><div id="cl" class="mu">Loading...</div></div>`;
   try {
+    async function viewCustomersOld() {
     const s = await getDocs(collection(db, "shops", me.shopId, "customers"));
     const l = s.docs.map(d => d.data()).filter(c => c.creditBalance > 0).sort((a, b) => b.creditBalance - a.creditBalance);
     $("cl").innerHTML = l.length ? l.map(c => `<div class="row"><b>${esc(c.name)}</b><span>${ugx(c.creditBalance)}</span></div>`).join("") : "No credit customers yet.";
